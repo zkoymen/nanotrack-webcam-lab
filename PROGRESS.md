@@ -1,4 +1,4 @@
-﻿# Project Progress
+# Project Progress
 
 Last updated: 2026-09-29
 
@@ -15,6 +15,7 @@ This file is a public, concise project status snapshot. It records verified chan
 - [x] Optional luminance CLAHE preprocessing; disabled by default.
 - [x] Configurable geometric area-drift safeguard that stops tracking and requests reselection.
 - [x] Separate tracker update time and application FPS reporting.
+- [x] Selectable NanoTrackV2, CSRT, and KCF backends share the same camera and ROI flow.
 - [x] Public-source privacy exclusions for local environments, model weights, media, and `docs/`.
 - [x] Initial technical review of small-target and rapid-motion failure modes.
 
@@ -26,8 +27,8 @@ This file is a public, concise project status snapshot. It records verified chan
 ### Next
 
 1. Finish the private baseline sequences and annotate target boxes.
-2. Compare NanoTrackV2 with FEAR-XS and OpenCV CSRT on the same clips and initial boxes.
-3. Include KCF or MOSSE as speed-oriented reference trackers.
+2. Compare NanoTrackV2, CSRT, and KCF on the same clips and initial boxes.
+3. Check FEAR-XS compatibility in the existing project environment before considering integration.
 4. Improve the lost-state diagnostics and tune area/motion guards from measured results.
 5. Revisit capture modes and image quality only after checking the private hardware notes.
 
