@@ -38,5 +38,5 @@ No alternate tracker benchmark has been completed yet. Candidate names above are
 - Keep this file to a short public status snapshot; update checkboxes only when there is evidence for the change.
 - Keep private hardware details, webcam footage, annotated frames, and long-form investigation notes in ignored `docs/`.
 - Make one focused Git commit per completed milestone, with a message describing the change.
-- Once the GitHub repository is available, create one GitHub Issue per measurable work item and link its issue number from the relevant commit or pull request.
+- Track measurable work as GitHub Issues and link each issue from the related commits or pull requests. Current benchmark issue: [#1](https://github.com/zkoymen/nanotrack-webcam-lab/issues/1).
 - Close an issue only after its acceptance criteria and results are recorded.
