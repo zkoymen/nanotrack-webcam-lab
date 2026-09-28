@@ -29,6 +29,8 @@ Select a tight box around the full target. Confirm the crop preview before track
 
 ```powershell
 python main.py --width 1280 --height 720 --fps 30
+python main.py --tracker csrt
+python main.py --tracker kcf
 python main.py --preprocess clahe
 ```
 
