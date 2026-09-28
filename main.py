@@ -16,8 +16,8 @@ import cv2
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_BACKBONE = PROJECT_DIR / "models" / "nanotrack_backbone_sim.onnx"
 DEFAULT_NECKHEAD = PROJECT_DIR / "models" / "nanotrack_head_sim.onnx"
-WINDOW_NAME = "Siamese Webcam Tracker - NanoTrackV2"
-ROI_PREVIEW_WINDOW = "Check selected target - Enter accepts, R redraws, C cancels"
+WINDOW_NAME = "Single-Object Webcam Tracker"
+ROI_PREVIEW_WINDOW = "Check target crop - Enter accepts, R redraws, C cancels"
 
 
 def has_nanotrack_api() -> bool:
@@ -27,7 +27,7 @@ def has_nanotrack_api() -> bool:
     )
 
 
-def create_tracker(backbone_path: Path, neckhead_path: Path) -> Any:
+def create_nanotrack(backbone_path: Path, neckhead_path: Path) -> Any:
     """Create a CPU TrackerNano instance, adapting to available binding names."""
     if not has_nanotrack_api():
         raise RuntimeError(
@@ -89,6 +89,44 @@ def create_tracker(backbone_path: Path, neckhead_path: Path) -> Any:
     )
 
 
+def create_tracker(tracker_name: str, backbone_path: Path, neckhead_path: Path) -> Any:
+    """Create the selected tracker using OpenCV's available Python API spelling."""
+    if tracker_name == "nanotrack":
+        return create_nanotrack(backbone_path, neckhead_path)
+
+    class_name = {"csrt": "CSRT", "kcf": "KCF"}.get(tracker_name)
+    if class_name is None:
+        raise ValueError(f"Unsupported tracker: {tracker_name}")
+
+    constructors = []
+    tracker_class = getattr(cv2, f"Tracker{class_name}", None)
+    class_create = getattr(tracker_class, "create", None)
+    if callable(class_create):
+        constructors.append(class_create)
+
+    top_level_create = getattr(cv2, f"Tracker{class_name}_create", None)
+    if callable(top_level_create):
+        constructors.append(top_level_create)
+
+    legacy_api = getattr(cv2, "legacy", None)
+    legacy_create = getattr(legacy_api, f"Tracker{class_name}_create", None)
+    if callable(legacy_create):
+        constructors.append(legacy_create)
+
+    errors = []
+    for constructor in constructors:
+        try:
+            return constructor()
+        except Exception as exc:  # OpenCV wheels expose different API spellings.
+            errors.append(str(exc))
+
+    detail = f" Details: {'; '.join(errors)}" if errors else ""
+    raise RuntimeError(
+        f"OpenCV {class_name} is unavailable. Install opencv-contrib-python "
+        f"in this project's .venv.{detail}"
+    )
+
+
 def open_camera(camera_index: int, width: int, height: int, requested_fps: float):
     """Open the webcam, preferring DirectShow on Windows and falling back to CAP_ANY."""
     backends: list[tuple[str, int]] = []
@@ -136,8 +174,8 @@ def open_camera(camera_index: int, width: int, height: int, requested_fps: float
     return None
 
 
-def select_target(frame, backbone_path: Path, neckhead_path: Path):
-    """Let the user draw an ROI, then initialize a fresh NanoTrack template."""
+def select_target(frame, tracker_name: str, backbone_path: Path, neckhead_path: Path):
+    """Let the user draw an ROI, then initialize the selected tracker."""
     while True:
         print(
             "Draw a tight box around the complete target and keep surrounding objects out. "
@@ -149,7 +187,7 @@ def select_target(frame, backbone_path: Path, neckhead_path: Path):
             print("Target selection cancelled.")
             return None, None
 
-        # A zoomed crop check makes it clear what NanoTrack will use as its template.
+        # A zoomed crop check makes it clear what the selected tracker will initialize from.
         target_crop = frame[y : y + height, x : x + width]
         scale = min(800 / width, 560 / height)
         preview_size = (max(1, round(width * scale)), max(1, round(height * scale)))
@@ -188,11 +226,10 @@ def select_target(frame, backbone_path: Path, neckhead_path: Path):
             continue
         break
 
-    tracker = create_tracker(backbone_path, neckhead_path)
-    # The selected target becomes the template/reference image.
+    tracker = create_tracker(tracker_name, backbone_path, neckhead_path)
     initialized = tracker.init(frame, (x, y, width, height))
     if initialized is False:
-        print("NanoTrack could not initialize this ROI. Select a larger visible region.")
+        print("The selected tracker could not initialize this ROI. Select a visible region and try again.")
         return None, None
 
     box = (float(x), float(y), float(width), float(height))
@@ -320,7 +357,13 @@ def draw_overlay(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Select one object and track it with Siamese NanoTrackV2."
+        description="Select and track one object with an OpenCV tracker."
+    )
+    parser.add_argument(
+        "--tracker",
+        choices=("nanotrack", "csrt", "kcf"),
+        default="nanotrack",
+        help="Tracker backend (default: nanotrack)",
     )
     parser.add_argument("--camera", type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--width", type=int, default=1280, help="Requested width (default: 1280)")
@@ -356,8 +399,17 @@ def parse_args():
 def main() -> int:
     args = parse_args()
     print(f"OpenCV: {cv2.__version__}")
-    print("Tracker: NanoTrackV2 / TrackerNano")
-    print("Backend: OpenCV DNN CPU")
+    tracker_labels = {
+        "nanotrack": "NanoTrackV2 / TrackerNano",
+        "csrt": "CSRT",
+        "kcf": "KCF",
+    }
+    print(f"Tracker: {tracker_labels[args.tracker]}")
+    print(
+        "Backend: OpenCV DNN CPU"
+        if args.tracker == "nanotrack"
+        else "Backend: OpenCV CPU"
+    )
     print(f"Preprocessing: {args.preprocess}")
     print(
         "Area drift guard: disabled"
@@ -365,7 +417,7 @@ def main() -> int:
         else f"Area drift guard: {args.max_area_scale:g}x from initial ROI"
     )
 
-    if not has_nanotrack_api():
+    if args.tracker == "nanotrack" and not has_nanotrack_api():
         print(
             f"TrackerNano is unavailable in OpenCV {cv2.__version__}. "
             "Install the full opencv-contrib-python package in .venv.",
@@ -428,7 +480,10 @@ def main() -> int:
                     else:
                         state = "LOST"
                         box = None
-                        loss_reason = f"size drift > {args.max_area_scale:g}x; press R"
+                        loss_reason = (
+                            f"area drift outside 1/{args.max_area_scale:g}x-"
+                            f"{args.max_area_scale:g}x ROI; press R"
+                        )
                 elif not updated:
                     state = "LOST"
                     box = None
@@ -451,7 +506,12 @@ def main() -> int:
                 # R reselects; SPACE/S can also start a new target while tracking.
                 if previous_frame is not None:
                     try:
-                        tracker, box = select_target(previous_frame, args.backbone, args.neckhead)
+                        tracker, box = select_target(
+                            previous_frame,
+                            args.tracker,
+                            args.backbone,
+                            args.neckhead,
+                        )
                         state = "TRACKING" if tracker is not None else "IDLE"
                         reference_box = box
                         score = None
