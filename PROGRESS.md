@@ -6,7 +6,7 @@ This file is a public, concise project status snapshot. It records verified chan
 
 ## Current status
 
-**Prototype:** a live webcam app that lets the user select and follow one target with OpenCV TrackerNanoV2.
+**Prototype:** a live webcam app that lets the user select and follow one target with OpenCV TrackerNanoV2, with a local replay workflow for comparing trackers.
 
 ### Completed
 
@@ -16,23 +16,39 @@ This file is a public, concise project status snapshot. It records verified chan
 - [x] Configurable geometric area-drift safeguard that stops tracking and requests reselection.
 - [x] Separate tracker update time and application FPS reporting.
 - [x] Selectable NanoTrackV2, CSRT, and KCF backends share the same camera and ROI flow.
+- [x] Add a private clip capture, sparse annotation, and same-video replay tool for repeatable NanoTrackV2 / CSRT / KCF comparisons.
+- [x] Prefer Windows Media Foundation for webcam capture after measuring faster frame acquisition than DirectShow; keep DirectShow as fallback.
+- [x] Review identity limits for visually identical objects and record the detector/tracker design trade-offs privately.
+- [x] Record a private 1280×720 note sequence at 28.9 FPS, label 40 frames, and replay the same ROI through NanoTrackV2, CSRT, and KCF.
 - [x] Public-source privacy exclusions for local environments, model weights, media, and `docs/`.
 - [x] Initial technical review of small-target and rapid-motion failure modes.
 
+### Measured baseline
+
+The clip contains 358 frames; tracking was initialized at frame 153 and evaluated at 40 labeled frames through frame 357. This is one short sequence, not a general accuracy claim. Processing FPS is unpaced offline replay.
+
+| Tracker | Mean IoU | IoU ≥ 0.5 | Mean update | Replay FPS |
+|---|---:|---:|---:|---:|
+| NanoTrackV2 | 0.6411 | 80% | 11.87 ms | 66.4 |
+| CSRT | 0.6467 | 85% | 85.92 ms | 11.1 |
+| KCF | 0.1617 | 20% | 28.98 ms | 77.0 |
+
+NanoTrackV2 and CSRT first fell below IoU 0.5 at frame 193 and below 0.1 at frame 333. CSRT's small overlap gain came with much slower updates. KCF's API update failed at frame 192. Keep NanoTrackV2 as the live default pending more sequences; these results do not measure identity switches separately.
+
 ### In progress
 
-- [ ] Build a repeatable private test set for small targets, rapid reversals, scale changes, and brief occlusion.
-- [ ] Record baseline tracking accuracy, loss/recovery behavior, frame cadence, and latency for NanoTrackV2.
+- [ ] Run a controlled sequence with explicitly measured rapid reversals, scale change, and hand occlusion.
+- [ ] Add identity-switch reporting for the two-instance overlap sequence.
+- [ ] Select a target-capable detector/runtime for optional recovery before integrating it into the live loop.
 
 ### Next
 
-1. Finish the private baseline sequences and annotate target boxes.
-2. Compare NanoTrackV2, CSRT, and KCF on the same clips and initial boxes.
-3. Check FEAR-XS compatibility in the existing project environment before considering integration.
-4. Improve the lost-state diagnostics and tune area/motion guards from measured results.
-5. Revisit capture modes and image quality only after checking the private hardware notes.
+1. Use the YOLO/detector findings in `docs/Tasks/IDENTITY_RESEARCH.md` to choose a model that can actually detect a selected note.
+2. Keep the detector on a recovery path so it does not slow NanoTrackV2 on every frame.
+3. Keep FEAR-XS deferred until an existing-environment-compatible inference route is available.
+4. Tune area/motion guards only after more measurements.
 
-No alternate tracker benchmark has been completed yet. Candidate names above are planned experiments, not performance claims.
+Private video, annotation CSV, and per-frame result files remain in ignored `docs/`. No clip, image, model weight, or hardware identifier is part of the public result.
 
 ## How progress is recorded
 
