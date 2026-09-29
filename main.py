@@ -128,9 +128,10 @@ def create_tracker(tracker_name: str, backbone_path: Path, neckhead_path: Path) 
 
 
 def open_camera(camera_index: int, width: int, height: int, requested_fps: float):
-    """Open the webcam, preferring DirectShow on Windows and falling back to CAP_ANY."""
+    """Open the webcam, preferring the locally faster Media Foundation backend."""
     backends: list[tuple[str, int]] = []
     if sys.platform == "win32":
+        backends.append(("Media Foundation", cv2.CAP_MSMF))
         backends.append(("DirectShow", cv2.CAP_DSHOW))
     backends.append(("OpenCV default", cv2.CAP_ANY))
 
