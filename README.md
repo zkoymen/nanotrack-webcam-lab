@@ -1,55 +1,24 @@
 # NanoTrack Webcam Lab
 
-A lightweight Python app for selecting and tracking one object from a live webcam feed with OpenCV TrackerNanoV2.
+Track one selected object from a webcam. NanoTrackV2 runs on each frame; optional YOLOE-26n searches for it again after tracking is lost.
 
-## Setup
-
-Requires Python 3.10+ and a webcam.
+## Run
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python download_models.py
 python main.py
 ```
 
-Model weights download to `models/` and are not included in this repository.
-
-## Controls
-
-- `SPACE` / `S`: select a target
-- `R`: select again
-- `C`: open camera settings when supported
-- `Q` / `ESC`: quit
-
-Select a tight box around the full target. Confirm the crop preview before tracking.
-
-## Options
+For YOLOE recovery, install the CPU packages and download its weights:
 
 ```powershell
-python main.py --width 1280 --height 720 --fps 30
-python main.py --tracker csrt
-python main.py --tracker kcf
-python main.py --preprocess clahe
+python -m pip install -r requirements-yolo.txt
+python -m pip install --no-deps ultralytics==8.4.165
+python download_models.py --yoloe
+python main.py
 ```
 
-CLAHE is optional and off by default. The area-drift guard stops tracking when the predicted box area changes by more than the configured factor from the initial selection. A high tracker score is not a probability that the box is correct.
+For automatic startup, place an example image and `docs/target-reference.json` locally: `{"image":"example.png","box":[x,y,width,height]}`. Both stay ignored by Git. Otherwise select one tight box with `SPACE`/`S` and confirm with `Enter`. `R` selects again; `Q`/`Esc` quits. Use `--recovery off` for NanoTrack alone. Recovery cannot establish physical identity when identical objects fully hide each other.
 
-## Local benchmark
-
-Keep clips, labels, and results under Git-ignored `docs/`. The benchmark replays the same video and initial box through each tracker.
-
-```powershell
-python benchmark.py record --output docs/sequences/test.mp4
-python benchmark.py annotate docs/sequences/test.mp4 --start-frame 0 --stride 5 --output docs/annotations/test.csv
-python benchmark.py run docs/sequences/test.mp4 --ground-truth docs/annotations/test.csv --output-dir docs/results/test
-```
-
-## Privacy and license
-
-The live tracker does not save or upload frames. The optional benchmark records footage locally only when explicitly run; clips, labels, and results stay under Git-ignored `docs/`. Source code is MIT licensed; model weights are downloaded separately and may have different terms.
-
-## Progress
-
-See [PROGRESS.md](PROGRESS.md) for the current status and benchmark issue.
+Live frames are not saved. Benchmark recordings and local notes stay in Git-ignored `docs/`. See [PROGRESS.md](PROGRESS.md) for measured results.
