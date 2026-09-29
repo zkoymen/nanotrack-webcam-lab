@@ -1,12 +1,12 @@
 # Project Progress
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
 
 This file is a public, concise project status snapshot. It records verified changes separately from planned experiments. Detailed local notes, hardware inventory, private test footage, and screenshots stay under the Git-ignored `docs/` directory.
 
 ## Current status
 
-**Prototype:** a live webcam app that follows one target with OpenCV TrackerNanoV2. YOLOE-26n can find a target from a local visual example at startup and search for it again after tracking loss.
+**Prototype:** a live webcam app that follows one selected target with OpenCV TrackerNanoV2. A standard YOLO26n detector checks recognized target classes in the background and searches after tracking loss.
 
 ### Completed
 
@@ -22,9 +22,10 @@ This file is a public, concise project status snapshot. It records verified chan
 - [x] Record a private 1280×720 note sequence at 28.9 FPS, label 40 frames, and replay the same ROI through NanoTrackV2, CSRT, and KCF.
 - [x] Public-source privacy exclusions for local environments, model weights, media, and `docs/`.
 - [x] Initial technical review of small-target and rapid-motion failure modes.
-- [x] Add YOLOE-26n visual-prompt detection on a background worker with a single latest-frame slot, leaving NanoTrackV2 on the per-frame path.
-- [x] Allow automatic startup from a private reference image and box; manual selection remains available.
-- [x] Reject recovery when candidate size, position, or identity is ambiguous.
+- [x] Compare YOLO11n, YOLO26n, and YOLOv7-tiny locally; choose YOLO26n ONNX for the CPU detector path.
+- [x] Keep NanoTrackV2 on the per-frame path and run one latest-frame YOLO task in the background.
+- [x] Match a selected ROI to a detected class before enabling YOLO checks; limit the overlay to one selected candidate.
+- [x] Reject recovery when candidate class, size, position, or ambiguity is inconsistent.
 
 ### Measured baseline
 
@@ -38,20 +39,21 @@ The clip contains 358 frames; tracking was initialized at frame 153 and evaluate
 
 NanoTrackV2 and CSRT first fell below IoU 0.5 at frame 193 and below 0.1 at frame 333. CSRT's small overlap gain came with much slower updates. KCF's API update failed at frame 192. Keep NanoTrackV2 as the live default pending more sequences; these results do not measure identity switches separately.
 
-On the same 40 labeled frames, YOLOE-26n with one visual example found the note in 28 frames at IoU ≥ 0.5; median warm CPU inference was 30.8 ms at 416-pixel input. Prompt-free and text-prompt runs were unreliable for this note. In a paced replay, the current NanoTrack area guard tripped only at frame 356, so automatic recovery did not improve that clip's earlier drift. This detector result is a component measurement, not a combined tracking gain.
+At 416-pixel input on four private camera frames, median warm full-prediction CPU times were 19.1 ms for YOLO26n ONNX and 22.1 ms for YOLO11n ONNX. YOLOv7-tiny took 53.6 ms for model forward alone. These are local component timings, not live application FPS or tracking accuracy. The stock models detected common COCO objects, but neither faces nor sticky notes. The earlier YOLOE visual-prompt experiment found the note in 28/40 labeled frames; that path is no longer in the app.
 
 ### In progress
 
 - [ ] Run a controlled sequence with explicitly measured rapid reversals, scale change, and hand occlusion.
 - [ ] Add identity-switch reporting for the two-instance overlap sequence.
-- [ ] Measure live webcam FPS and recovery latency with YOLOE enabled after the model has loaded.
+- [ ] Measure live webcam FPS and recovery latency with YOLO26n enabled after the model has loaded.
 - [ ] Evaluate the combined app on a controlled loss and on two identical notes; report identity switches separately.
+- [ ] Obtain and evaluate target-trained detection weights for faces or notes before claiming recovery for those targets.
 
 ### Next
 
-1. Measure whether periodic, low-rate detector checks can catch plausible-box drift without switching to a lookalike note.
+1. Measure whether periodic, low-rate class-aware detector checks catch plausible-box drift without adopting an occluder.
 2. Add a controlled fast-motion and identical-note sequence with explicit identity labels.
-3. Improve automatic first-frame detection only when it beats the current visual-example path on those sequences.
+3. Evaluate target-trained detection for faces and notes with identity-aware recovery; stock COCO weights do not cover them.
 
 Private video, annotation CSV, and per-frame result files remain in ignored `docs/`. No clip, image, model weight, or hardware identifier is part of the public result.
 
