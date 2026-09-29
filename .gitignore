@@ -8,6 +8,10 @@ __pycache__/
 .env.*
 !.env.example
 models/*.onnx
+models/*.pt
+models/*.pth
+models/*.engine
+models/*.tflite
 captures/
 recordings/
 output/
