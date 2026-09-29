@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import sys
 import time
@@ -13,14 +12,13 @@ from typing import Any
 
 import cv2
 
-from visual_detector import VisualDetector, choose_candidate, choose_initial_candidate
+from yolo_detector import YoloDetector, box_iou, choose_recovery_candidate, match_selected_roi
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_BACKBONE = PROJECT_DIR / "models" / "nanotrack_backbone_sim.onnx"
 DEFAULT_NECKHEAD = PROJECT_DIR / "models" / "nanotrack_head_sim.onnx"
-DEFAULT_YOLOE = PROJECT_DIR / "models" / "yoloe-26n-seg.pt"
-DEFAULT_TARGET_CONFIG = PROJECT_DIR / "docs" / "target-reference.json"
+DEFAULT_YOLO = PROJECT_DIR / "models" / "yolo26n.onnx"
 WINDOW_NAME = "Single-Object Webcam Tracker"
 ROI_PREVIEW_WINDOW = "Check target crop - Enter accepts, R redraws, C cancels"
 
@@ -250,10 +248,10 @@ def select_target(frame, tracker_name: str, backbone_path: Path, neckhead_path: 
 def initialize_detected_target(
     frame, candidate, tracker_name: str, backbone_path: Path, neckhead_path: Path
 ):
-    """Initialize OpenCV from a YOLO box using integer pixel coordinates."""
+    """Initialize OpenCV from a detector box using integer pixel coordinates."""
     frame_height, frame_width = frame.shape[:2]
     if not valid_box(candidate.box, frame_width, frame_height):
-        raise RuntimeError("YOLOE returned a box outside the frame")
+        raise RuntimeError("YOLO returned a box outside the frame")
     x, y, w, h = candidate.box
     left = max(0, min(frame_width - 1, round(x)))
     top = max(0, min(frame_height - 1, round(y)))
@@ -263,23 +261,8 @@ def initialize_detected_target(
     tracker = create_tracker(tracker_name, backbone_path, neckhead_path)
     initialized = tracker.init(frame, box)
     if initialized is False:
-        raise RuntimeError("Tracker rejected the YOLOE box")
+        raise RuntimeError("Tracker rejected the YOLO box")
     return tracker, tuple(float(value) for value in box)
-
-
-def load_target_reference(config_path: Path):
-    """Read an optional local visual example without copying it into the repo."""
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-    image_path = Path(data["image"]).expanduser()
-    if not image_path.is_absolute():
-        image_path = config_path.parent / image_path
-    frame = cv2.imread(str(image_path))
-    if frame is None:
-        raise ValueError(f"Cannot read target reference image: {image_path}")
-    box = tuple(float(value) for value in data["box"])
-    if len(box) != 4 or not valid_box(box, frame.shape[1], frame.shape[0]):
-        raise ValueError("Target reference box is invalid")
-    return frame, box
 
 
 def read_tracking_score(tracker) -> float | None:
@@ -345,9 +328,20 @@ def draw_overlay(
     tracker_ms: float | None,
     app_fps: float,
     loss_reason: str | None = None,
-    recovery_state: str = "off",
+    detector_state: str = "off",
+    detector_boxes=(),
 ):
-    """Draw the current tracking box, center, status, and measured timings."""
+    """Draw class-filtered YOLO boxes and the active NanoTrack box."""
+    for candidate in detector_boxes:
+        x, y, width, height = candidate.box
+        x1, y1 = int(round(x)), int(round(y))
+        x2, y2 = int(round(x + width)), int(round(y + height))
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 150, 30), 2)
+        cv2.putText(
+            frame, f"YOLO {candidate.label} {candidate.confidence:.2f}",
+            (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX,
+            0.52, (255, 150, 30), 2, cv2.LINE_AA,
+        )
     if box is not None and tracking_state == "TRACKING":
         x, y, width, height = box
         x1, y1 = int(round(x)), int(round(y))
@@ -355,6 +349,10 @@ def draw_overlay(
         center = (int(round(x + width / 2)), int(round(y + height / 2)))
         cv2.rectangle(frame, (x1, y1), (x2, y2), (40, 220, 80), 2)
         cv2.circle(frame, center, 4, (30, 40, 255), -1)
+        cv2.putText(
+            frame, "NanoTrack", (x1, min(frame.shape[0] - 8, y2 + 20)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.52, (40, 220, 80), 2, cv2.LINE_AA,
+        )
 
     if tracking_state == "TRACKING":
         status = "TRACKING"
@@ -363,11 +361,7 @@ def draw_overlay(
         status = "TRACK LOST"
         color = (40, 40, 255)
     else:
-        status = (
-            "Searching for target - SPACE/S to select"
-            if recovery_state != "off"
-            else "No target - press SPACE/S to select"
-        )
+        status = "No target - press SPACE/S to select"
         color = (0, 210, 255)
 
     lines = [status]
@@ -376,7 +370,7 @@ def draw_overlay(
     lines.append(f"Score: {score:.3f}" if score is not None else "Score: n/a")
     lines.append(f"Tracker: {tracker_ms:.1f} ms" if tracker_ms is not None else "Tracker: n/a")
     lines.append(f"FPS: {app_fps:.1f}" if app_fps > 0 else "FPS: --")
-    lines.append(f"YOLOE recovery: {recovery_state}")
+    lines.append(f"YOLO: {detector_state}")
     lines.append("SPACE/S: select   R: reselect   Q/ESC: quit")
 
     height, width = frame.shape[:2]
@@ -440,20 +434,16 @@ def parse_args():
     parser.add_argument("--backbone", type=Path, default=DEFAULT_BACKBONE, help="NanoTrack backbone ONNX path")
     parser.add_argument("--neckhead", type=Path, default=DEFAULT_NECKHEAD, help="NanoTrack head ONNX path")
     parser.add_argument(
-        "--recovery", choices=("yoloe", "off"), default="yoloe",
-        help="Use a background YOLOE-26n visual prompt to recover a lost target",
+        "--detector", choices=("yolo", "off"), default="yolo",
+        help="Use class-aware YOLO detection to verify and recover the tracker",
     )
-    parser.add_argument("--yoloe-model", type=Path, default=DEFAULT_YOLOE, help="YOLOE-26n checkpoint path")
-    parser.add_argument("--yoloe-size", type=int, default=416, help="YOLOE input size (default: 416)")
-    parser.add_argument(
-        "--target-config", type=Path, default=DEFAULT_TARGET_CONFIG,
-        help="Optional local JSON with a reference image and [x,y,w,h] box for automatic start",
-    )
+    parser.add_argument("--yolo-model", type=Path, default=DEFAULT_YOLO, help="YOLO26n ONNX or custom detection checkpoint")
+    parser.add_argument("--yolo-size", type=int, default=416, help="YOLO input size (default: 416)")
     args = parser.parse_args()
     if args.max_area_scale != 0 and args.max_area_scale < 1:
         parser.error("--max-area-scale must be 0 (disabled) or at least 1")
-    if args.yoloe_size < 256 or args.yoloe_size % 32:
-        parser.error("--yoloe-size must be at least 256 and divisible by 32")
+    if args.yolo_size < 256 or args.yolo_size % 32:
+        parser.error("--yolo-size must be at least 256 and divisible by 32")
     return args
 
 
@@ -501,28 +491,29 @@ def main() -> int:
     last_loop_start = None
     app_fps = 0.0
     previous_frame = None
-    detector: VisualDetector | None = None
-    startup_reference_box = None
+    detector: YoloDetector | None = None
+    target_class: int | None = None
+    target_label = None
+    class_attempts = 0
+    last_detection = None
+    selected_detection = None
+    last_trusted_box = None
+    previous_detector_box = None
+    mismatch_count = 0
+    miss_count = 0
+    box_history: deque[tuple[int, tuple[float, float, float, float]]] = deque(maxlen=32)
     last_good_box = None
     lost_at_frame = 0
     frame_id = 0
 
-    if args.recovery == "yoloe" and not args.yoloe_model.is_file():
+    if args.detector == "yolo" and not args.yolo_model.is_file():
         print(
-            "YOLOE checkpoint missing; recovery is off. Run: python download_models.py --yoloe",
+            "YOLO checkpoint missing; detection is off. Run: python download_models.py --yolo26n",
             file=sys.stderr,
         )
-        args.recovery = "off"
-    if args.recovery == "yoloe" and args.target_config.is_file():
-        try:
-            startup_frame, startup_reference_box = load_target_reference(args.target_config)
-            detector = VisualDetector(
-                args.yoloe_model, startup_frame, startup_reference_box,
-                image_size=args.yoloe_size,
-            )
-            print("Automatic target search enabled from local reference image.")
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            print(f"Target reference could not be loaded: {exc}", file=sys.stderr)
+        args.detector = "off"
+    if args.detector == "yolo":
+        detector = YoloDetector(args.yolo_model, image_size=args.yolo_size)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if args.preprocess == "clahe" else None
 
     try:
@@ -584,83 +575,120 @@ def main() -> int:
                     score = None
                     loss_reason = "invalid box"
 
+            if state == "TRACKING" and box is not None:
+                box_history.append((frame_id, box))
+
             if detector is not None and detector.status == "error":
-                print(f"YOLOE recovery error: {detector.error}", file=sys.stderr)
+                print(f"YOLO detection error: {detector.error}", file=sys.stderr)
                 detector.close()
                 detector = None
-            if state == "IDLE" and detector is not None and startup_reference_box is not None:
-                result = detector.pop_result()
-                if result is not None and frame_id - result.frame_id <= 6:
-                    candidate = choose_initial_candidate(
-                        result.candidates, startup_reference_box, args.max_area_scale
-                    )
-                    if candidate is not None:
-                        try:
-                            tracker, box = initialize_detected_target(
-                                result.frame, candidate, args.tracker, args.backbone,
-                                args.neckhead,
-                            )
-                            reference_box = box
-                            last_good_box = box
-                            state = "TRACKING"
-                            score = None
-                            print(
-                                f"Target detected automatically at frame {result.frame_id} "
-                                f"(confidence {candidate.confidence:.2f})"
-                            )
-                        except (RuntimeError, cv2.error) as exc:
-                            print(f"Automatic target initialization failed: {exc}", file=sys.stderr)
-                if state == "IDLE" and frame_id % 6 == 0:
-                    detector.submit(frame_id, frame)
-            if state == "LOST" and detector is not None and last_good_box is not None:
-                result = detector.pop_result()
-                if (
-                    result is not None
-                    and result.frame_id >= lost_at_frame
-                    and frame_id - result.frame_id <= 6
-                ):
-                    candidate = choose_candidate(
-                        result.candidates,
-                        last_good_box,
-                        reference_box,
-                        result.frame_id - lost_at_frame,
-                        args.max_area_scale,
-                    )
-                    if candidate is not None and valid_box(
-                        candidate.box, frame_width, frame_height
-                    ):
-                        try:
-                            tracker, box = initialize_detected_target(
-                                result.frame, candidate, args.tracker, args.backbone,
-                                args.neckhead,
-                            )
-                            last_good_box = box
-                            state = "TRACKING"
-                            score = None
-                            loss_reason = None
-                            print(
-                                f"Recovered at frame {result.frame_id} with YOLOE "
-                                f"(confidence {candidate.confidence:.2f}, "
-                                f"{result.latency_ms:.1f} ms)"
-                            )
-                        except (RuntimeError, cv2.error) as exc:
-                            print(f"YOLOE recovery could not reset tracker: {exc}", file=sys.stderr)
-                if state == "LOST" and frame_id % 6 == 0:
-                    detector.submit(frame_id, frame)
 
+            result = detector.pop_result() if detector is not None else None
+            if result is not None and frame_id - result.frame_id <= 8:
+                last_detection = result
+                selected_detection = None
+                historical_box = next(
+                    (saved for saved_frame, saved in reversed(box_history)
+                     if saved_frame == result.frame_id),
+                    None,
+                )
+                if target_class is None and historical_box is not None and state == "TRACKING":
+                    candidate = match_selected_roi(result.candidates, historical_box)
+                    if candidate is None:
+                        class_attempts += 1
+                        if class_attempts >= 3:
+                            target_class = -1
+                            print("YOLO has no unambiguous class for this ROI; recovery disabled.")
+                    else:
+                        target_class, target_label = candidate.class_id, candidate.label
+                        last_trusted_box = candidate.box
+                        previous_detector_box = candidate.box
+                        selected_detection = candidate
+                        print(f"YOLO target class: {target_label} ({target_class})")
+                elif target_class is not None and target_class >= 0 and reference_box is not None:
+                    anchor = last_trusted_box or last_good_box
+                    candidate = (
+                        choose_recovery_candidate(
+                            result.candidates, target_class, anchor, reference_box,
+                            max(0, result.frame_id - lost_at_frame), args.max_area_scale,
+                        )
+                        if anchor is not None else None
+                    )
+                    selected_detection = candidate
+                    if state == "TRACKING" and historical_box is not None:
+                        if candidate is None:
+                            miss_count += 1
+                            mismatch_count = 0
+                            if miss_count >= 3:
+                                state, box, score = "LOST", None, None
+                                lost_at_frame = frame_id
+                                loss_reason = "YOLO target absent or ambiguous"
+                        elif box_iou(candidate.box, historical_box) >= 0.35:
+                            last_trusted_box = candidate.box
+                            previous_detector_box = candidate.box
+                            mismatch_count = miss_count = 0
+                        else:
+                            miss_count = 0
+                            coherent = previous_detector_box is not None and box_iou(
+                                candidate.box, previous_detector_box
+                            ) >= 0.2
+                            mismatch_count = mismatch_count + 1 if coherent else 1
+                            previous_detector_box = candidate.box
+                            if mismatch_count >= 2:
+                                try:
+                                    tracker, box = initialize_detected_target(
+                                        result.frame, candidate, args.tracker,
+                                        args.backbone, args.neckhead,
+                                    )
+                                    last_good_box = last_trusted_box = box
+                                    box_history.clear()
+                                    mismatch_count = miss_count = 0
+                                    score = None
+                                    print(f"YOLO corrected tracker drift at frame {result.frame_id}.")
+                                except (RuntimeError, cv2.error) as exc:
+                                    print(f"YOLO correction failed: {exc}", file=sys.stderr)
+                    elif state == "LOST" and result.frame_id >= lost_at_frame and candidate is not None:
+                        try:
+                            tracker, box = initialize_detected_target(
+                                result.frame, candidate, args.tracker,
+                                args.backbone, args.neckhead,
+                            )
+                            last_good_box = last_trusted_box = box
+                            previous_detector_box = box
+                            box_history.clear()
+                            mismatch_count = miss_count = 0
+                            state, score, loss_reason = "TRACKING", None, None
+                            print(
+                                f"YOLO recovered {target_label} at frame {result.frame_id} "
+                                f"({result.latency_ms:.1f} ms)."
+                            )
+                        except (RuntimeError, cv2.error) as exc:
+                            print(f"YOLO recovery failed: {exc}", file=sys.stderr)
+
+            if (
+                detector is not None and target_class != -1
+                and state in ("TRACKING", "LOST")
+                and frame_id % (6 if state == "LOST" else 10) == 0
+            ):
+                detector.submit(frame_id, frame)
+
+            if detector is None:
+                detector_state = "off"
+            elif target_class == -1:
+                detector_state = "ROI class unknown; no recovery"
+            elif target_class is None:
+                detector_state = f"matching ROI ({detector.status})"
+            else:
+                detector_state = f"{target_label} / {detector.status}"
+            detector_boxes = (
+                (selected_detection,)
+                if selected_detection is not None and last_detection is not None
+                and frame_id - last_detection.frame_id <= 12
+                else ()
+            )
             display = draw_overlay(
-                frame,
-                box,
-                state,
-                score,
-                tracker_ms,
-                app_fps,
-                loss_reason,
-                (
-                    f"searching ({detector.status})"
-                    if detector is not None and state == "LOST"
-                    else detector.status if detector is not None else "off"
-                ),
+                frame, box, state, score, tracker_ms, app_fps,
+                loss_reason, detector_state, detector_boxes,
             )
             cv2.imshow(WINDOW_NAME, display)
             previous_frame = frame
@@ -672,10 +700,6 @@ def main() -> int:
                 # R reselects; SPACE/S can also start a new target while tracking.
                 if previous_frame is not None:
                     try:
-                        if detector is not None:
-                            detector.close()
-                            detector = None
-                        startup_reference_box = None
                         tracker, box = select_target(
                             previous_frame,
                             args.tracker,
@@ -687,13 +711,16 @@ def main() -> int:
                         last_good_box = box
                         score = None
                         loss_reason = None
-                        if tracker is not None and args.recovery == "yoloe":
-                            detector = VisualDetector(
-                                args.yoloe_model,
-                                previous_frame,
-                                box,
-                                image_size=args.yoloe_size,
-                            )
+                        target_class = target_label = None
+                        class_attempts = mismatch_count = miss_count = 0
+                        last_trusted_box = previous_detector_box = None
+                        last_detection = None
+                        selected_detection = None
+                        box_history.clear()
+                        if tracker is not None and detector is not None:
+                            box_history.append((frame_id, box))
+                            detector.pop_result()
+                            detector.submit(frame_id, previous_frame)
                     except (FileNotFoundError, RuntimeError, cv2.error) as exc:
                         print(str(exc), file=sys.stderr)
                         tracker, box, state = None, None, "IDLE"
@@ -701,6 +728,8 @@ def main() -> int:
                         last_good_box = None
                         score = None
                         loss_reason = None
+                        target_class = target_label = None
+                        box_history.clear()
             if key in (ord("c"), ord("C")):
                 try:
                     opened = capture.set(cv2.CAP_PROP_SETTINGS, 1)
@@ -712,9 +741,11 @@ def main() -> int:
                     )
                     tracker, box, reference_box = None, None, None
                     last_good_box = None
-                    if detector is not None:
-                        detector.close()
-                        detector = None
+                    last_trusted_box = previous_detector_box = None
+                    target_class = target_label = None
+                    last_detection = None
+                    selected_detection = None
+                    box_history.clear()
                     state, score, loss_reason = "IDLE", None, None
                 else:
                     print("This camera backend does not expose a settings panel.")

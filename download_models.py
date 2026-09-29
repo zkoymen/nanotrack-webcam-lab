@@ -1,4 +1,4 @@
-"""Download the NanoTrack and optional YOLOE model files."""
+"""Download NanoTrack models or prepare the optional YOLO26n CPU detector."""
 
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ MODELS = {
     "nanotrack_backbone_sim.onnx": 500_000,
     "nanotrack_head_sim.onnx": 300_000,
 }
-YOLOE_URL = (
+YOLO26_URL = (
     "https://github.com/ultralytics/assets/releases/download/v8.4.0/"
-    "yoloe-26n-seg.pt"
+    "yolo26n.pt"
 )
 TEXT_PREFIXES = (
     b"<!doctype html",
@@ -94,12 +94,22 @@ def download_model(filename: str, minimum_size: int, url: str | None = None) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--yoloe", action="store_true", help="Download YOLOE-26n visual-prompt weights")
+    parser.add_argument("--yolo26n", action="store_true", help="Download and export YOLO26n detection weights to ONNX")
     args = parser.parse_args()
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        if args.yoloe:
-            download_model("yoloe-26n-seg.pt", 10_000_000, YOLOE_URL)
+        if args.yolo26n:
+            checkpoint = download_model("yolo26n.pt", 3_000_000, YOLO26_URL)
+            exported = MODEL_DIR / "yolo26n.onnx"
+            if not looks_like_model(exported, 3_000_000):
+                from ultralytics import YOLO
+
+                YOLO(str(checkpoint)).export(
+                    format="onnx", imgsz=416, nms=False, simplify=False, device="cpu"
+                )
+                if not looks_like_model(exported, 3_000_000):
+                    raise RuntimeError("YOLO26n ONNX export did not produce a valid model")
+            print(f"CPU detector ready: {exported}")
         else:
             for filename, minimum_size in MODELS.items():
                 download_model(filename, minimum_size)
