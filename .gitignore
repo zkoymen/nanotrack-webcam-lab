@@ -12,6 +12,7 @@ models/*.pt
 models/*.pth
 models/*.engine
 models/*.tflite
+models/*.ts
 captures/
 recordings/
 output/

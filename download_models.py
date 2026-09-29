@@ -1,7 +1,8 @@
-"""Download the official NanoTrackV2 ONNX models from HonglinChu/SiamTrackers."""
+"""Download the NanoTrack and optional YOLOE model files."""
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import tempfile
@@ -20,6 +21,10 @@ MODELS = {
     "nanotrack_backbone_sim.onnx": 500_000,
     "nanotrack_head_sim.onnx": 300_000,
 }
+YOLOE_URL = (
+    "https://github.com/ultralytics/assets/releases/download/v8.4.0/"
+    "yoloe-26n-seg.pt"
+)
 TEXT_PREFIXES = (
     b"<!doctype html",
     b"<html",
@@ -27,7 +32,7 @@ TEXT_PREFIXES = (
 )
 
 
-def looks_like_onnx(path: Path, minimum_size: int) -> bool:
+def looks_like_model(path: Path, minimum_size: int) -> bool:
     try:
         if not path.is_file() or path.stat().st_size < minimum_size:
             return False
@@ -38,13 +43,13 @@ def looks_like_onnx(path: Path, minimum_size: int) -> bool:
         return False
 
 
-def download_model(filename: str, minimum_size: int) -> Path:
+def download_model(filename: str, minimum_size: int, url: str | None = None) -> Path:
     destination = MODEL_DIR / filename
-    if looks_like_onnx(destination, minimum_size):
+    if looks_like_model(destination, minimum_size):
         print(f"Already present: {destination}")
         return destination
 
-    url = f"{BASE_URL}/{filename}"
+    url = url or f"{BASE_URL}/{filename}"
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "siamese-webcam-tracker/1.0"},
@@ -66,9 +71,9 @@ def download_model(filename: str, minimum_size: int) -> Path:
                         break
                     output.write(chunk)
 
-        if not looks_like_onnx(temporary_path, minimum_size):
+        if not looks_like_model(temporary_path, minimum_size):
             raise RuntimeError(
-                "download is too small or looks like an HTML/Git LFS pointer, not an ONNX model"
+                "download is too small or looks like an HTML/Git LFS pointer"
             )
         os.replace(temporary_path, destination)
         temporary_path = None
@@ -76,7 +81,7 @@ def download_model(filename: str, minimum_size: int) -> Path:
         return destination
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         raise RuntimeError(
-            f"Could not download {filename} from the official SiamTrackers repository. "
+            f"Could not download {filename}. "
             f"Check your internet connection and try again. Details: {exc}"
         ) from exc
     finally:
@@ -88,15 +93,21 @@ def download_model(filename: str, minimum_size: int) -> Path:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--yoloe", action="store_true", help="Download YOLOE-26n visual-prompt weights")
+    args = parser.parse_args()
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        for filename, minimum_size in MODELS.items():
-            download_model(filename, minimum_size)
+        if args.yoloe:
+            download_model("yoloe-26n-seg.pt", 10_000_000, YOLOE_URL)
+        else:
+            for filename, minimum_size in MODELS.items():
+                download_model(filename, minimum_size)
     except RuntimeError as exc:
         print(f"Model download failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"NanoTrackV2 models are stored in: {MODEL_DIR}")
+    print(f"Models are stored in: {MODEL_DIR}")
     return 0
 
 
